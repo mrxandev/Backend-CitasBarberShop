@@ -20,3 +20,17 @@ export const adminAppointments = async (req, res) => { const { page, limit, skip
 export const adminGetAppointment = getAppointment;
 export const adminStatus = (req, res) => { const map = { APPROVED: ["PENDING"], REJECTED: ["PENDING"], COMPLETED: ["APPROVED"], NO_SHOW: ["APPROVED"] }; if (!map[req.body.status]) throw new ApiError("Estado administrativo no permitido"); return transition(req, res, req.body.status, map[req.body.status], `APPOINTMENT_${req.body.status}`); };
 export const reassign = async (req, res) => { const appointment = await Appointment.findById(req.params.id); if (!appointment) throw new ApiError("Cita no encontrada", 404); const date = req.body.appointmentDate || appointment.appointmentDate.toISOString().slice(0, 10); const startTime = req.body.startTime || appointment.startTime; const barberId = req.body.barberId || appointment.barberId; const slot = await validateAppointmentSlot({ barberId, serviceId: appointment.serviceId, date, startTime, excludeId: appointment._id }); Object.assign(appointment, { barberId, appointmentDate: slot.appointmentDate, startTime, endTime: slot.endTime }); await appointment.save(); await audit({ req, action: "APPOINTMENT_REASSIGNED", entity: "APPOINTMENT", entityId: appointment._id, description: "Cita reasignada", newData: appointment.toJSON() }); return ok(res, "Cita reasignada", { appointment }); };
+
+export const rescheduleAppointment = async (req, res) => {
+  const appointment = await Appointment.findById(req.params.id);
+  if (!appointment) throw new ApiError("Cita no encontrada", 404);
+  if (!appointment.clientId.equals(req.user._id)) throw new ApiError("Solo puedes reagendar tus propias citas", 403);
+  if (!["PENDING", "APPROVED"].includes(appointment.status)) throw new ApiError("Solo se pueden reagendar citas pendientes o aprobadas");
+  const { appointmentDate, startTime, rescheduleReason } = req.body;
+  const slot = await validateAppointmentSlot({ barberId: appointment.barberId, serviceId: appointment.serviceId, date: appointmentDate, startTime, excludeId: appointment._id });
+  const previous = appointment.toJSON();
+  Object.assign(appointment, { appointmentDate: slot.appointmentDate, startTime, endTime: slot.endTime, status: "PENDING", clientNotes: rescheduleReason ? `[Reagendado] ${rescheduleReason}` : appointment.clientNotes });
+  await appointment.save();
+  await audit({ req, action: "APPOINTMENT_RESCHEDULED", entity: "APPOINTMENT", entityId: appointment._id, description: "Cita reagendada por el cliente", previousData: previous, newData: appointment.toJSON() });
+  return ok(res, "Cita reagendada correctamente", { appointment: await appointment.populate(populate) });
+};
